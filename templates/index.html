@@ -46,8 +46,14 @@
       min-height: 70px;
     }
 
-    button {
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
       margin-top: 1rem;
+    }
+
+    button {
       padding: 0.6rem 1.2rem;
       border-radius: 4px;
       border: none;
@@ -57,8 +63,18 @@
       font-weight: 600;
     }
 
-    button:hover {
+    button[disabled] {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    button:hover:enabled {
       background-color: #1d4ed8;
+    }
+
+    #timer {
+      font-size: 0.9rem;
+      color: #555;
     }
 
     table {
@@ -101,10 +117,16 @@
 <body>
   <h1>reth RPC Bench</h1>
   <p class="small">
-    Simple benchmark: choose method, RPS, and duration. Requests are sent from the server to your node.
+    Simple benchmark: choose method, RPS(Request Per Second), and duration.
+  </p>
+  <p class="small">
+    Example url for Base node: <a HREF="https://base-rpc.publicnode.com">
+        https://base-rpc.publicnode.com
+      </a>
   </p>
 
-  <form method="post" action="/run">
+
+  <form id="bench-form">
     <label for="url">Node RPC URL</label>
     <input
       type="text"
@@ -148,83 +170,129 @@
       {% endfor %}
     </select>
 
-    <button type="submit">Run benchmark</button>
+    <div class="actions">
+      <button type="submit" id="run-btn">Run benchmark</button>
+      <span id="timer">Idle</span>
+    </div>
   </form>
 
-  {% if summary %}
-    <h2>Summary</h2>
-    <table class="summary-table">
-      <tbody>
-        <tr>
-          <th>Total requests</th>
-          <td>{{ summary.total_requests }}</td>
-        </tr>
-        <tr>
-          <th>Success</th>
-          <td class="success">{{ summary.total_success }}</td>
-        </tr>
-        <tr>
-          <th>Errors</th>
-          <td class="error">{{ summary.total_errors }}</td>
-        </tr>
-        <tr>
-          <th>Error rate</th>
-          <td>{{ "%.2f" | format(summary.error_rate) }}%</td>
-        </tr>
-        <tr>
-          <th>Latency min (ms)</th>
-          <td>{{ "%.2f" | format(summary.latency_min_ms) }}</td>
-        </tr>
-        <tr>
-          <th>Latency avg (ms)</th>
-          <td>{{ "%.2f" | format(summary.latency_avg_ms) }}</td>
-        </tr>
-        <tr>
-          <th>Latency p50 (ms)</th>
-          <td>{{ "%.2f" | format(summary.latency_p50_ms) }}</td>
-        </tr>
-        <tr>
-          <th>Latency p90 (ms)</th>
-          <td>{{ "%.2f" | format(summary.latency_p90_ms) }}</td>
-        </tr>
-        <tr>
-          <th>Latency p95 (ms)</th>
-          <td>{{ "%.2f" | format(summary.latency_p95_ms) }}</td>
-        </tr>
-        <tr>
-          <th>Latency p99 (ms)</th>
-          <td>{{ "%.2f" | format(summary.latency_p99_ms) }}</td>
-        </tr>
-      </tbody>
-    </table>
+  <h2>Summary</h2>
+  <table class="summary-table">
+    <tbody id="summary-body">
+      <!-- Filled by JS -->
+    </tbody>
+  </table>
 
-    <h2>Per-request results</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Latency (ms)</th>
-          <th>Status code</th>
-          <th>Success</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in results %}
-        <tr>
-          <td>{{ r.index }}</td>
-          <td>{{ "%.2f" | format(r.latency_ms) }}</td>
-          <td>{{ r.status_code if r.status_code is not none else "-" }}</td>
-          <td>
-            {% if r.success %}
-              <span class="success">OK</span>
-            {% else %}
-              <span class="error">FAIL</span>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% endif %}
+
+  <script>
+    (function () {
+      const form = document.getElementById("bench-form");
+      const timerEl = document.getElementById("timer");
+      const runBtn = document.getElementById("run-btn");
+      const summaryBody = document.getElementById("summary-body");
+
+      let timerId = null;
+      let currentSec = 0;
+      let targetSec = 0;
+
+      function startTimer(duration) {
+        currentSec = 0;
+        targetSec = duration;
+        if (timerId) clearInterval(timerId);
+
+        timerEl.textContent = `Running: 0 / ${targetSec} s`;
+        timerId = setInterval(() => {
+          currentSec += 1;
+          if (currentSec >= targetSec) {
+            timerEl.textContent = `Running: ${targetSec} / ${targetSec} s`;
+            clearInterval(timerId);
+            timerId = null;
+          } else {
+            timerEl.textContent = `Running: ${currentSec} / ${targetSec} s`;
+          }
+        }, 1000);
+      }
+
+      function stopTimer() {
+        if (timerId) {
+          clearInterval(timerId);
+          timerId = null;
+        }
+        timerEl.textContent = `Done in ~${currentSec} s`;
+      }
+
+      function resetTimer() {
+        if (timerId) {
+          clearInterval(timerId);
+          timerId = null;
+        }
+        currentSec = 0;
+        targetSec = 0;
+        timerEl.textContent = "Idle";
+      }
+
+      function renderSummary(summary) {
+        if (!summary) {
+          summaryBody.innerHTML = "";
+          return;
+        }
+
+        function row(label, value) {
+          return `<tr><th>${label}</th><td>${value}</td></tr>`;
+        }
+
+        summaryBody.innerHTML =
+          row("Total requests", summary.total_requests) +
+          row("Success", `<span class="success">${summary.total_success}</span>`) +
+          row("Errors", `<span class="error">${summary.total_errors}</span>`) +
+          row("Error rate", `${summary.error_rate.toFixed(2)}%`) +
+          row("Latency min (ms)", summary.latency_min_ms.toFixed(2)) +
+          row("Latency max (ms)", summary.latency_max_ms.toFixed(2)) +
+          row("Latency avg (ms)", summary.latency_avg_ms.toFixed(2)) +
+          row("Latency p90 (ms)", summary.latency_p90_ms.toFixed(2)) +
+          row("Latency p95 (ms)", summary.latency_p95_ms.toFixed(2)) +
+          row("Latency p99 (ms)", summary.latency_p99_ms.toFixed(2));
+      }
+
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+
+        const formData = new FormData(form);
+        const durationStr = formData.get("duration");
+        const duration = durationStr ? parseInt(durationStr, 10) : 0;
+
+        runBtn.disabled = true;
+        startTimer(duration);
+        summaryBody.innerHTML = "";
+
+        try {
+          const resp = await fetch("/run", {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!resp.ok) {
+            stopTimer();
+            runBtn.disabled = false;
+            alert("Benchmark failed: " + resp.status);
+            return;
+          }
+
+          const data = await resp.json();
+          stopTimer();
+          renderSummary(data.summary);
+        } catch (err) {
+          stopTimer();
+          alert("Error calling benchmark endpoint");
+        } finally {
+          runBtn.disabled = false;
+        }
+      });
+
+      // Reset timer when page first loads
+      resetTimer();
+    })();
+  </script>
 </body>
 </html>

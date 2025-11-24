@@ -1,21 +1,19 @@
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
-# from fastapi.staticfiles import StaticFiles
-
-import requests
+import os
+import json
+import math
 import time
 import statistics
-import math
-import json
-import os
+import asyncio
+
+import aiohttp
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
 
 app = FastAPI()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
-
-# app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
 def percentile(data, p: float):
@@ -33,7 +31,61 @@ def percentile(data, p: float):
     return d0 + d1
 
 
-def run_benchmark(
+async def make_single_request(
+    session: aiohttp.ClientSession,
+    url: str,
+    method: str,
+    headers: dict | None,
+    index: int,
+):
+    """
+    Send a single JSON-RPC request and return a result dict:
+    {index, latency_ms, success, status_code}
+    """
+    # Build payload
+    payload: dict = {
+        "jsonrpc": "2.0",
+        "id": index,
+        "method": method,
+        "params": [],
+    }
+
+    # For eth_getBlockByNumber we benchmark "latest"
+    if method == "eth_getBlockByNumber":
+        payload["params"] = ["latest", False]
+
+    start = time.perf_counter()
+    success = False
+    status_code: int | None = None
+
+    try:
+        async with session.post(url, json=payload, headers=headers or {}, timeout=15) as resp:
+            status_code = resp.status
+            elapsed = time.perf_counter() - start
+            latency_ms = elapsed * 1000.0
+
+            if resp.status == 200:
+                try:
+                    data = await resp.json()
+                    if "error" not in data:
+                        success = True
+                except Exception:
+                    # JSON parse error, count as failure
+                    success = False
+    except Exception:
+        elapsed = time.perf_counter() - start
+        latency_ms = elapsed * 1000.0
+        success = False
+
+    return {
+        "index": index,
+        "latency_ms": latency_ms,
+        "success": success,
+        "status_code": status_code,
+    }
+
+
+async def run_benchmark_async(
     url: str,
     method: str,
     headers: dict | None,
@@ -41,66 +93,53 @@ def run_benchmark(
     duration_seconds: int,
 ):
     """
-    Very simple RPS-based benchmark:
+    Asynchronous RPS-based benchmark:
     - total_requests = rps * duration
-    - send requests one by one
-    - sleep to roughly maintain RPS
+    - fire up to `rps` requests per second in batches
     """
     total_requests = rps * duration_seconds
-    interval = 1.0 / rps
+    results: list[dict] = []
 
-    results = []  # list of dicts: {index, latency_ms, success, status_code}
+    start_time = time.perf_counter()
+    end_time = start_time + duration_seconds
+    sent = 0
 
-    for i in range(total_requests):
-        payload = {
-            "jsonrpc": "2.0",
-            "id": i,
-            "method": method,
-            "params": [],
-        }
+    async with aiohttp.ClientSession() as session:
+        # Loop in 1-second batches
+        while time.perf_counter() < end_time and sent < total_requests:
+            batch_start = time.perf_counter()
+            tasks = []
 
-        # For eth_getBlockByNumber we benchmark "latest"
-        if method == "eth_getBlockByNumber":
-            payload["params"] = ["latest", False]
+            # Prepare up to `rps` requests for this second
+            for _ in range(rps):
+                if sent >= total_requests:
+                    break
+                idx = sent + 1
+                tasks.append(
+                    make_single_request(
+                        session=session,
+                        url=url,
+                        method=method,
+                        headers=headers,
+                        index=idx,
+                    )
+                )
+                sent += 1
 
-        start = time.perf_counter()
-        success = False
-        status_code = None
+            if tasks:
+                batch_results = await asyncio.gather(*tasks)
+                results.extend(batch_results)
 
-        try:
-            resp = requests.post(url, json=payload, headers=headers or {}, timeout=10)
-            status_code = resp.status_code
-            elapsed = time.perf_counter() - start
-            latency_ms = elapsed * 1000.0
-
-            if resp.status_code == 200:
-                data = resp.json()
-                if "error" not in data:
-                    success = True
-        except Exception:
-            elapsed = time.perf_counter() - start
-            latency_ms = elapsed * 1000.0
-            success = False
-
-        results.append(
-            {
-                "index": i + 1,
-                "latency_ms": latency_ms,
-                "success": success,
-                "status_code": status_code,
-            }
-        )
-
-        # Sleep to roughly match RPS
-        sleep_for = interval - (time.perf_counter() - start)
-        if sleep_for > 0:
-            time.sleep(sleep_for)
+            # Keep roughly 1-second pacing per batch
+            elapsed = time.perf_counter() - batch_start
+            if elapsed < 1.0:
+                await asyncio.sleep(1.0 - elapsed)
 
     latencies = [r["latency_ms"] for r in results]
     successes = [r for r in results if r["success"]]
     errors = [r for r in results if not r["success"]]
 
-    summary = {}
+    summary: dict = {}
     if latencies:
         summary = {
             "total_requests": len(results),
@@ -110,7 +149,6 @@ def run_benchmark(
             "latency_min_ms": min(latencies),
             "latency_max_ms": max(latencies),
             "latency_avg_ms": statistics.mean(latencies),
-            "latency_p50_ms": percentile(latencies, 50),
             "latency_p90_ms": percentile(latencies, 90),
             "latency_p95_ms": percentile(latencies, 95),
             "latency_p99_ms": percentile(latencies, 99),
@@ -138,16 +176,14 @@ async def index(request: Request):
     )
 
 
-@app.post("/run", response_class=HTMLResponse)
-async def run(
-    request: Request,
+@app.post("/run")
+async def run_json(
     url: str = Form(...),
     method: str = Form(...),
     headers: str = Form(""),
     rps: int = Form(...),
     duration: int = Form(...),
 ):
-    # Parse headers if given as JSON, otherwise ignore
     headers_dict: dict | None = None
     if headers.strip():
         try:
@@ -157,7 +193,7 @@ async def run(
         except json.JSONDecodeError:
             headers_dict = None
 
-    summary, results = run_benchmark(
+    summary, results = await run_benchmark_async(
         url=url,
         method=method,
         headers=headers_dict,
@@ -165,18 +201,4 @@ async def run(
         duration_seconds=duration,
     )
 
-    return templates.TemplateResponse(
-        "index.html",
-        {
-            "request": request,
-            "summary": summary,
-            "results": results,
-            "form_values": {
-                "url": url,
-                "method": method,
-                "headers": headers,
-                "rps": rps,
-                "duration": duration,
-            },
-        },
-    )
+    return JSONResponse({"summary": summary, "results": results})
