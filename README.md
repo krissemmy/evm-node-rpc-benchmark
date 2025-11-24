@@ -13,7 +13,7 @@ private Ethereum-compatible nodes from a browser.
 ## Quick start
 
 ```bash
-cd /Users/krissemmy/personal/evm-node-rpc-benchmark
+cd evm-node-rpc-benchmark/
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn main:app --reload
