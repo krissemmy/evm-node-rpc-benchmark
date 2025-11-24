@@ -2,3 +2,4 @@ fastapi
 uvicorn[standard]
 jinja2
 aiohttp
+python-multipart
