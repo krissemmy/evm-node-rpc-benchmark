@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>reth RPC Bench</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 900px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+    }
+
+    h1 {
+      margin-bottom: 0.5rem;
+    }
+
+    form {
+      border: 1px solid #ddd;
+      padding: 1rem;
+      border-radius: 8px;
+      margin-bottom: 2rem;
+    }
+
+    label {
+      display: block;
+      margin-top: 0.75rem;
+      font-weight: 600;
+    }
+
+    input[type="text"],
+    textarea,
+    select,
+    input[type="number"] {
+      width: 100%;
+      padding: 0.4rem;
+      margin-top: 0.25rem;
+      box-sizing: border-box;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      font-family: inherit;
+      font-size: 0.95rem;
+    }
+
+    textarea {
+      min-height: 70px;
+    }
+
+    button {
+      margin-top: 1rem;
+      padding: 0.6rem 1.2rem;
+      border-radius: 4px;
+      border: none;
+      cursor: pointer;
+      background-color: #2563eb;
+      color: white;
+      font-weight: 600;
+    }
+
+    button:hover {
+      background-color: #1d4ed8;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+      font-size: 0.9rem;
+    }
+
+    th, td {
+      border: 1px solid #ddd;
+      padding: 0.4rem 0.5rem;
+      text-align: left;
+    }
+
+    th {
+      background-color: #f7f7f7;
+    }
+
+    .summary-table {
+      margin-bottom: 1.5rem;
+    }
+
+    .success {
+      color: #16a34a;
+      font-weight: 600;
+    }
+
+    .error {
+      color: #dc2626;
+      font-weight: 600;
+    }
+
+    .small {
+      font-size: 0.85rem;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <h1>reth RPC Bench</h1>
+  <p class="small">
+    Simple benchmark: choose method, RPS, and duration. Requests are sent from the server to your node.
+  </p>
+
+  <form method="post" action="/run">
+    <label for="url">Node RPC URL</label>
+    <input
+      type="text"
+      id="url"
+      name="url"
+      required
+      placeholder="https://your-node:8545"
+      value="{{ form_values.url }}"
+    />
+
+    <label for="method">Method</label>
+    <select id="method" name="method">
+      <option value="eth_blockNumber" {% if form_values.method == "eth_blockNumber" %}selected{% endif %}>
+        eth_blockNumber
+      </option>
+      <option value="eth_getBlockByNumber" {% if form_values.method == "eth_getBlockByNumber" %}selected{% endif %}>
+        eth_getBlockByNumber (latest)
+      </option>
+    </select>
+
+    <label for="headers">Headers (optional, JSON object)</label>
+    <textarea
+      id="headers"
+      name="headers"
+      placeholder='{"Authorization": "Bearer ..."}'
+    >{{ form_values.headers }}</textarea>
+
+    <label for="rps">Requests per second</label>
+    <select id="rps" name="rps">
+      <option value="5" {% if form_values.rps == 5 %}selected{% endif %}>5 RPS</option>
+      <option value="10" {% if form_values.rps == 10 %}selected{% endif %}>10 RPS</option>
+      <option value="15" {% if form_values.rps == 15 %}selected{% endif %}>15 RPS</option>
+    </select>
+
+    <label for="duration">Duration (seconds, max 60)</label>
+    <select id="duration" name="duration">
+      {% for s in range(5, 65, 5) %}
+      <option value="{{ s }}" {% if form_values.duration == s %}selected{% endif %}>
+        {{ s }} seconds
+      </option>
+      {% endfor %}
+    </select>
+
+    <button type="submit">Run benchmark</button>
+  </form>
+
+  {% if summary %}
+    <h2>Summary</h2>
+    <table class="summary-table">
+      <tbody>
+        <tr>
+          <th>Total requests</th>
+          <td>{{ summary.total_requests }}</td>
+        </tr>
+        <tr>
+          <th>Success</th>
+          <td class="success">{{ summary.total_success }}</td>
+        </tr>
+        <tr>
+          <th>Errors</th>
+          <td class="error">{{ summary.total_errors }}</td>
+        </tr>
+        <tr>
+          <th>Error rate</th>
+          <td>{{ "%.2f" | format(summary.error_rate) }}%</td>
+        </tr>
+        <tr>
+          <th>Latency min (ms)</th>
+          <td>{{ "%.2f" | format(summary.latency_min_ms) }}</td>
+        </tr>
+        <tr>
+          <th>Latency avg (ms)</th>
+          <td>{{ "%.2f" | format(summary.latency_avg_ms) }}</td>
+        </tr>
+        <tr>
+          <th>Latency p50 (ms)</th>
+          <td>{{ "%.2f" | format(summary.latency_p50_ms) }}</td>
+        </tr>
+        <tr>
+          <th>Latency p90 (ms)</th>
+          <td>{{ "%.2f" | format(summary.latency_p90_ms) }}</td>
+        </tr>
+        <tr>
+          <th>Latency p95 (ms)</th>
+          <td>{{ "%.2f" | format(summary.latency_p95_ms) }}</td>
+        </tr>
+        <tr>
+          <th>Latency p99 (ms)</th>
+          <td>{{ "%.2f" | format(summary.latency_p99_ms) }}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Per-request results</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Latency (ms)</th>
+          <th>Status code</th>
+          <th>Success</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in results %}
+        <tr>
+          <td>{{ r.index }}</td>
+          <td>{{ "%.2f" | format(r.latency_ms) }}</td>
+          <td>{{ r.status_code if r.status_code is not none else "-" }}</td>
+          <td>
+            {% if r.success %}
+              <span class="success">OK</span>
+            {% else %}
+              <span class="error">FAIL</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</body>
+</html>
